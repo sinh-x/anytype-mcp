@@ -110,6 +110,28 @@ describe("base-url utilities", () => {
       expect(determineBaseUrl(mockOpenApiSpec)).toBe("http://localhost:3000");
       expect(consoleSpy).toHaveBeenCalledWith("Using base URL from OpenAPI spec: http://localhost:3000");
     });
+
+    it("should use configFileBaseUrl when env var is not set", () => {
+      const consoleSpy = vi.spyOn(console, "error");
+      delete process.env.ANYTYPE_API_BASE_URL;
+
+      expect(determineBaseUrl(mockOpenApiSpec, "http://config-file:31009")).toBe("http://config-file:31009");
+      expect(consoleSpy).toHaveBeenCalledWith("Using base URL from credentials config: http://config-file:31009");
+    });
+
+    it("should prioritize ANYTYPE_API_BASE_URL over configFileBaseUrl", () => {
+      const consoleSpy = vi.spyOn(console, "error");
+      process.env.ANYTYPE_API_BASE_URL = "http://env-var:31009";
+
+      expect(determineBaseUrl(mockOpenApiSpec, "http://config-file:31009")).toBe("http://env-var:31009");
+      expect(consoleSpy).toHaveBeenCalledWith("Using base URL from ANYTYPE_API_BASE_URL: http://env-var:31009");
+    });
+
+    it("should prioritize configFileBaseUrl over spec servers", () => {
+      delete process.env.ANYTYPE_API_BASE_URL;
+
+      expect(determineBaseUrl(mockOpenApiSpec, "http://config-file:31009")).toBe("http://config-file:31009");
+    });
   });
 
   describe("getDefaultSpecUrl", () => {

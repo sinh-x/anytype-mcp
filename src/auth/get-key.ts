@@ -1,9 +1,8 @@
 import axios from "axios";
 import * as readline from "readline";
+import { CREDENTIALS_PATH, saveCredentials } from "../config/credentials";
 
-interface AuthToken {
-  app_key: string;
-}
+const ANYTYPE_VERSION = "2025-11-08";
 
 export class AppKeyGenerator {
   private readonly rl: readline.Interface;
@@ -51,9 +50,11 @@ export class AppKeyGenerator {
    */
   private async startAuthentication(): Promise<string> {
     try {
-      const response = await axios.post(`${this.basePath}/v1/auth/display_code`, null, {
-        params: { app_name: this.appName },
-      });
+      const response = await axios.post(
+        `${this.basePath}/v1/auth/challenges`,
+        { app_name: this.appName },
+        { headers: { "Anytype-Version": ANYTYPE_VERSION } },
+      );
 
       if (!response.data?.challenge_id) {
         throw new Error("Failed to get challenge ID");
@@ -77,15 +78,18 @@ export class AppKeyGenerator {
     code: string,
   ): Promise<{ appKey: string; anytypeVersion: string }> {
     try {
-      const response = await axios.post<AuthToken>(`${this.basePath}/v1/auth/token`, null, {
-        params: { challenge_id: challengeId, code: code },
-      });
+      const response = await axios.post(
+        `${this.basePath}/v1/auth/api_keys`,
+        { challenge_id: challengeId, code },
+        { headers: { "Anytype-Version": ANYTYPE_VERSION } },
+      );
 
-      if (!response.data?.app_key) {
-        throw new Error("Authentication failed: No app key received");
+      if (!response.data?.api_key) {
+        throw new Error("Authentication failed: No API key received");
       }
 
-      return { appKey: response.data.app_key, anytypeVersion: response.headers["anytype-version"] };
+      const anytypeVersion = response.headers["anytype-version"] || ANYTYPE_VERSION;
+      return { appKey: response.data.api_key, anytypeVersion };
     } catch (error) {
       console.error("Authentication error:", error instanceof Error ? error.message : error);
       throw new Error("Failed to complete authentication");
@@ -102,6 +106,12 @@ export class AppKeyGenerator {
 
       const { appKey, anytypeVersion } = await this.completeAuthentication(challengeId, code);
       console.log("Authenticated successfully!");
+
+      // Auto-save credentials to config file
+      const baseUrl = this.basePath !== "http://127.0.0.1:31009" ? this.basePath : undefined;
+      saveCredentials({ apiKey: appKey, anytypeVersion, baseUrl });
+      console.log(`\nCredentials saved to ${CREDENTIALS_PATH}`);
+
       this.displaySuccessMessage(appKey, anytypeVersion);
     } catch (error) {
       console.error("Error:", error instanceof Error ? error.message : error);
