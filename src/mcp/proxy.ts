@@ -7,6 +7,7 @@ import { OpenAPIV3 } from "openapi-types";
 import { HttpClient, HttpClientError } from "../client/http-client";
 import { OpenAPIToMCPConverter } from "../openapi/parser";
 import { determineBaseUrl } from "../utils/base-url";
+import { registerSecrets, sanitize } from "../utils/sanitizer";
 
 type PathItemObject = OpenAPIV3.PathItemObject & {
   get?: OpenAPIV3.OperationObject;
@@ -74,12 +75,12 @@ export class MCPProxy {
 
     // Handle tool calling
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      console.error("calling tool", request.params);
+      console.error(...sanitize("calling tool", request.params));
       const { name, arguments: params } = request.params;
 
       // Find the operation in OpenAPI spec
       const operation = this.findOperation(name);
-      console.error("operations", this.openApiLookup);
+      console.error(...sanitize("operations", this.openApiLookup));
       if (!operation) {
         throw new Error(`Method ${name} not found`);
       }
@@ -98,9 +99,9 @@ export class MCPProxy {
           ],
         };
       } catch (error) {
-        console.error("Error in tool call", error);
+        console.error(...sanitize("Error in tool call", error));
         if (error instanceof HttpClientError) {
-          console.error("HttpClientError encountered, returning structured error", error);
+          console.error(...sanitize("HttpClientError encountered, returning structured error", error));
           const data = error.data?.response?.data ?? error.data ?? {};
           return {
             content: [
@@ -135,6 +136,7 @@ export class MCPProxy {
         console.warn("OPENAPI_MCP_HEADERS environment variable must be a JSON object, got:", typeof headers);
         return {};
       }
+      registerSecrets(headers);
       return headers;
     } catch (error) {
       console.warn("Failed to parse OPENAPI_MCP_HEADERS environment variable:", error);
