@@ -5,6 +5,7 @@ import { Headers } from "node-fetch";
 import OpenAPIClientAxios from "openapi-client-axios";
 import type { OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import { isFileUploadParameter } from "../openapi/file-upload";
+import { sanitize } from "../utils/sanitizer";
 
 export type HttpClientConfig = {
   baseUrl: string;
@@ -53,7 +54,7 @@ export class HttpClient {
     operation: OpenAPIV3.OperationObject,
     params: Record<string, any>,
   ): Promise<FormData | null> {
-    console.error("prepareFileUpload", { operation, params });
+    console.error(...sanitize("prepareFileUpload", { operation, params }));
     const fileParams = isFileUploadParameter(operation);
     if (fileParams.length === 0) return null;
 
@@ -61,7 +62,7 @@ export class HttpClient {
 
     // Handle file uploads
     for (const param of fileParams) {
-      console.error(`extracting ${param}`, { params });
+      console.error(...sanitize(`extracting ${param}`, { params }));
       const filePath = params[param];
       if (!filePath) {
         throw new Error(`File path must be provided for parameter: ${param}`);
@@ -168,7 +169,7 @@ export class HttpClient {
       };
 
       // first argument is url parameters, second is body parameters
-      console.error("calling operation", { operationId, urlParameters, bodyParams, requestConfig });
+      console.error(...sanitize("calling operation", { operationId, urlParameters, bodyParams, requestConfig }));
       const response = await operationFn(urlParameters, hasBody ? bodyParams : undefined, requestConfig);
 
       console.error("operation finished");
@@ -185,7 +186,7 @@ export class HttpClient {
       };
     } catch (error: any) {
       if (error.response) {
-        console.error("Error in http client", error);
+        console.error(...sanitize("Error in http client", error));
         const headers = new Headers();
         Object.entries(error.response.headers).forEach(([key, value]) => {
           if (value) headers.append(key, value.toString());
