@@ -3,11 +3,17 @@ import { Headers } from "node-fetch";
 import { OpenAPIV3 } from "openapi-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpClient } from "../../client/http-client";
+import { loadCredentials } from "../../config/credentials";
 import { MCPProxy } from "../proxy";
 
 // Mock the dependencies
 vi.mock("../../client/http-client");
 vi.mock("@modelcontextprotocol/sdk/server/index.js");
+vi.mock("../../config/credentials", () => ({
+  loadCredentials: vi.fn(() => ({ headers: {}, baseUrl: undefined })),
+}));
+
+const mockLoadCredentials = vi.mocked(loadCredentials);
 
 describe("MCPProxy", () => {
   let proxy: MCPProxy;
@@ -139,54 +145,34 @@ describe("MCPProxy", () => {
     });
   });
 
-  describe("parseHeadersFromEnv", () => {
-    const originalEnv = process.env;
+  describe("loadCredentials integration", () => {
     const expectHeaders = (headers: Record<string, string>) => {
       expect(HttpClient).toHaveBeenCalledWith(expect.objectContaining({ headers }), expect.anything());
     };
 
-    beforeEach(() => {
-      process.env = { ...originalEnv };
-    });
-
-    afterEach(() => {
-      process.env = originalEnv;
-    });
-
-    it("should parse valid JSON headers from env", () => {
-      process.env.OPENAPI_MCP_HEADERS = JSON.stringify({
-        Authorization: "Bearer token123",
-        "X-Custom-Header": "test",
+    it("should pass headers from loadCredentials to HttpClient", () => {
+      mockLoadCredentials.mockReturnValueOnce({
+        headers: { Authorization: "Bearer token123", "X-Custom-Header": "test" },
       });
       new MCPProxy("test-proxy", mockOpenApiSpec);
       expectHeaders({ Authorization: "Bearer token123", "X-Custom-Header": "test" });
     });
 
-    it("should return empty object when env var is not set", () => {
-      delete process.env.OPENAPI_MCP_HEADERS;
+    it("should pass empty headers when loadCredentials returns none", () => {
+      mockLoadCredentials.mockReturnValueOnce({ headers: {} });
       new MCPProxy("test-proxy", mockOpenApiSpec);
       expectHeaders({});
     });
 
-    it("should return empty object and warn on invalid JSON", () => {
-      const consoleSpy = vi.spyOn(console, "warn");
-      process.env.OPENAPI_MCP_HEADERS = "invalid json";
+    it("should use baseUrl from loadCredentials when provided", () => {
+      mockLoadCredentials.mockReturnValueOnce({
+        headers: {},
+        baseUrl: "http://config-file:31009",
+      });
       new MCPProxy("test-proxy", mockOpenApiSpec);
-      expectHeaders({});
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Failed to parse OPENAPI_MCP_HEADERS environment variable:",
-        expect.any(Error),
-      );
-    });
-
-    it("should return empty object and warn on non-object JSON", () => {
-      const consoleSpy = vi.spyOn(console, "warn");
-      process.env.OPENAPI_MCP_HEADERS = '"string"';
-      new MCPProxy("test-proxy", mockOpenApiSpec);
-      expectHeaders({});
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "OPENAPI_MCP_HEADERS environment variable must be a JSON object, got:",
-        "string",
+      expect(HttpClient).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: "http://config-file:31009" }),
+        expect.anything(),
       );
     });
   });

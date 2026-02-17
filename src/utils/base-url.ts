@@ -29,10 +29,11 @@ export function parseBaseUrlFromEnv(): string | null {
 /**
  * Determines the base URL using priority order:
  * 1. ANYTYPE_API_BASE_URL environment variable
- * 2. OpenAPI spec servers[0].url
- * 3. Default fallback: http://127.0.0.1:31009
+ * 2. Config file baseUrl (if provided)
+ * 3. OpenAPI spec servers[0].url
+ * 4. Default fallback: http://127.0.0.1:31009
  */
-export function determineBaseUrl(openApiSpec?: OpenAPIV3.Document): string {
+export function determineBaseUrl(openApiSpec?: OpenAPIV3.Document, configFileBaseUrl?: string): string {
   // Priority 1: Environment variable
   const envEndpoint = parseBaseUrlFromEnv();
   if (envEndpoint) {
@@ -40,14 +41,20 @@ export function determineBaseUrl(openApiSpec?: OpenAPIV3.Document): string {
     return envEndpoint;
   }
 
-  // Priority 2: OpenAPI spec servers[0].url
+  // Priority 2: Config file baseUrl
+  if (configFileBaseUrl) {
+    console.error(`Using base URL from credentials config: ${configFileBaseUrl}`);
+    return configFileBaseUrl;
+  }
+
+  // Priority 3: OpenAPI spec servers[0].url
   const specUrl = openApiSpec?.servers?.[0]?.url;
   if (specUrl) {
     console.error(`Using base URL from OpenAPI spec: ${specUrl}`);
     return specUrl;
   }
 
-  // Priority 3: Default fallback
+  // Priority 4: Default fallback
   const defaultUrl = "http://127.0.0.1:31009";
   console.error(`Using default base URL: ${defaultUrl}`);
   return defaultUrl;
