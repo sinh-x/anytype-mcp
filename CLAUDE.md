@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Development
 - `npm install -D` - Install all dependencies including devDependencies
 - `npm run dev` - Start the development server with file watching (uses tsx watch)
-- `npm run build` - Build the TypeScript project and generate CLI binary (bin/cli.mjs)
+- `npm run build` - Build the TypeScript project and generate CLI binary (`bin/cli.mjs`) via esbuild
 
 ### Testing
 - `npm test` - Run all tests once with Vitest
@@ -27,6 +27,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an MCP (Model Context Protocol) server that bridges Anytype's API with AI assistants. The architecture follows a proxy pattern where OpenAPI specifications are dynamically converted to MCP tools.
 
+### Entry Points
+
+The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports two commands:
+- `run` (default) — starts the MCP server on stdio
+- `get-key` — interactive flow to authenticate and obtain an API key from a running Anytype instance
+
 ### Core Components
 
 **MCP Proxy Layer (`src/mcp/proxy.ts`)**
@@ -37,30 +43,45 @@ This is an MCP (Model Context Protocol) server that bridges Anytype's API with A
 
 **OpenAPI Parser (`src/openapi/parser.ts`)**
 - Converts OpenAPI schemas to JSON Schema format for MCP compatibility
-- Handles $ref resolution with cycle detection
+- Handles $ref resolution with cycle detection and schema caching
 - Supports multipart/form-data for file uploads
-- Generates MCP tool definitions from OpenAPI paths and operations
+- Also generates tool definitions for OpenAI (`convertToOpenAITools()`) and Anthropic (`convertToAnthropicTools()`) formats
+- Special-case handling for icon schemas (emoji only) and property value union types
 
 **HTTP Client (`src/client/http-client.ts`)**
 - Built on openapi-client-axios for OpenAPI-aware HTTP requests
 - Handles authentication headers from environment variables
-- Supports file uploads via FormData
-- Executes OpenAPI operations with proper parameter mapping
+- Supports file uploads via FormData with single and multi-file support
+- Separates path/query parameters from body parameters automatically
 
 **Server Initialization (`src/init-server.ts`)**
-- Loads OpenAPI spec from URL (default: local Anytype API) or file
+- Loads OpenAPI spec from URL or local file
 - Initializes the MCP proxy with the spec
 - Connects to stdio transport for communication
+
+**Library Exports (`src/index.ts`)**
+- Exports `HttpClient`, `OpenAPIToMCPConverter`, and OpenAPI types for use as a library
 
 ### Key Design Patterns
 
 1. **Dynamic Tool Generation**: Tools are not hardcoded but generated from the OpenAPI spec at runtime, making the server adaptable to API changes.
 
-2. **Header Injection**: Authentication and version headers are parsed from `OPENAPI_MCP_HEADERS` environment variable and injected into all requests.
+2. **Header Injection**: Authentication and version headers are parsed from `OPENAPI_MCP_HEADERS` environment variable (JSON object) and injected into all requests. The `Anytype-Version` header is auto-stripped from tool input schemas since it's already set via the headers.
 
-3. **Operation Mapping**: Each OpenAPI operation becomes an MCP tool with a naming convention: `{tag}-{operationId}`.
+3. **Tool Naming**: Each OpenAPI operation becomes an MCP tool named `API-{operationId}` in kebab-case, truncated to 64 characters (with a numeric suffix if needed for uniqueness). Operations tagged `Auth` are excluded.
 
-4. **Schema Caching**: The parser maintains a cache of resolved schemas to handle circular references and improve performance.
+4. **Base URL Resolution** (`src/utils/base-url.ts`): Priority order is (1) `ANYTYPE_API_BASE_URL` env var, (2) OpenAPI spec `servers[0].url`, (3) default `http://127.0.0.1:31009`.
+
+5. **Build**: esbuild bundles `scripts/start-server.ts` into a single self-contained `bin/cli.mjs` with a shebang for direct execution.
+
+### Known Limitations
+
+- **Filters not supported**: `FilterExpression` refs resolve to `{}` and `filters` fields are stripped from request bodies (multiple TODOs in parser).
+
+## Environment Variables
+
+- `OPENAPI_MCP_HEADERS` — JSON object of headers injected into every API request (e.g., `{"Authorization":"Bearer <KEY>", "Anytype-Version":"2025-11-08"}`)
+- `ANYTYPE_API_BASE_URL` — Override the default API base URL (default: `http://127.0.0.1:31009`)
 
 ## Testing Strategy
 
