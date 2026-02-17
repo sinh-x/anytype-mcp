@@ -91,6 +91,14 @@ Tests use Vitest and are colocated with source files in `__tests__` directories.
 - MCP proxy tool execution
 - Multipart form data handling
 
+## Git Branch Strategy
+
+This is a fork of [anyproto/anytype-mcp](https://github.com/anyproto/anytype-mcp).
+
+- **`main`** — tracks upstream. Used only to sync with `anyproto/anytype-mcp`. Never commit directly here.
+- **`sinh-x-develop`** — personal development base branch. All feature work branches from and merges back into this branch.
+- **Feature branches** — branch from `sinh-x-develop` using `feat/`, `fix/`, `chore/` prefixes (e.g., `feat/add-filters`). PR back into `sinh-x-develop`.
+
 ## Code Style
 
 - Prettier with 120 character line width
