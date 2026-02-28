@@ -2,21 +2,19 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { JSONSchema7 as IJsonSchema } from "json-schema";
-import { Headers } from "node-fetch";
 import { OpenAPIV3 } from "openapi-types";
+import {
+  CACHE_STATS_TOOL,
+  CACHE_STATS_TOOL_NAME,
+  GET_CACHED_CONTENT_TOOL,
+  GET_CACHED_CONTENT_TOOL_NAME,
+  ObjectCacheManager,
+} from "./cache";
 import { HttpClient, HttpClientError } from "../client/http-client";
 import { loadCredentials } from "../config/credentials";
 import { OpenAPIToMCPConverter } from "../openapi/parser";
 import { determineBaseUrl } from "../utils/base-url";
 import { sanitize } from "../utils/sanitizer";
-
-type PathItemObject = OpenAPIV3.PathItemObject & {
-  get?: OpenAPIV3.OperationObject;
-  put?: OpenAPIV3.OperationObject;
-  post?: OpenAPIV3.OperationObject;
-  delete?: OpenAPIV3.OperationObject;
-  patch?: OpenAPIV3.OperationObject;
-};
 
 type NewToolDefinition = {
   methods: Array<{
@@ -32,6 +30,7 @@ export class MCPProxy {
   private httpClient: HttpClient;
   private tools: Record<string, NewToolDefinition>;
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>;
+  private objectCache: ObjectCacheManager;
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document, instructions?: string) {
     this.server = new Server(
@@ -53,6 +52,7 @@ export class MCPProxy {
     const { tools, openApiLookup } = converter.convertToMCPTools();
     this.tools = tools;
     this.openApiLookup = openApiLookup;
+    this.objectCache = new ObjectCacheManager();
 
     this.setupHandlers();
   }
@@ -75,6 +75,10 @@ export class MCPProxy {
         });
       });
 
+      // Add custom tools
+      tools.push(CACHE_STATS_TOOL);
+      tools.push(GET_CACHED_CONTENT_TOOL);
+
       return { tools };
     });
 
@@ -82,6 +86,14 @@ export class MCPProxy {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       console.error(...sanitize("calling tool", request.params));
       const { name, arguments: params } = request.params;
+
+      // Handle custom tools
+      if (name === CACHE_STATS_TOOL_NAME) {
+        return this.handleCacheStats(params);
+      }
+      if (name === GET_CACHED_CONTENT_TOOL_NAME) {
+        return this.handleGetCachedContent(params);
+      }
 
       // Find the operation in OpenAPI spec
       const operation = this.findOperation(name);
@@ -91,15 +103,44 @@ export class MCPProxy {
       }
 
       try {
+        // Cache-aware handling for object operations
+        if (name === "API-get-object") {
+          return this.handleGetObject(operation, params);
+        }
+
         // Execute the operation
         const response = await this.httpClient.executeOperation(operation, params);
+
+        // Post-operation cache invalidation
+        if (name === "API-update-object" || name === "API-delete-object") {
+          const spaceId = params?.space_id as string;
+          const objectId = params?.object_id as string;
+          if (spaceId && objectId) {
+            this.objectCache.invalidate(spaceId, objectId);
+            console.error(`Cache invalidated for ${spaceId}:${objectId} after ${name}`);
+          }
+        }
+
+        // Opportunistic cache invalidation from search results
+        if (name === "API-search-space" || name === "API-search-global") {
+          const spaceId = params?.space_id as string;
+          const results = (response.data as Record<string, unknown>)?.data as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (spaceId && results) {
+            const invalidated = this.objectCache.invalidateStaleFromSearch(spaceId, results);
+            if (invalidated > 0) {
+              console.error(`Cache: invalidated ${invalidated} stale entries from search results`);
+            }
+          }
+        }
 
         // Convert response to MCP format
         return {
           content: [
             {
-              type: "text", // currently this is the only type that seems to be used by mcp server
-              text: JSON.stringify(response.data), // TODO: pass through the http status code text?
+              type: "text",
+              text: JSON.stringify(response.data),
             },
           ],
         };
@@ -113,7 +154,7 @@ export class MCPProxy {
               {
                 type: "text",
                 text: JSON.stringify({
-                  status: "error", // TODO: get this from http status code?
+                  status: "error",
                   ...(typeof data === "object" ? data : { data: data }),
                 }),
               },
@@ -125,20 +166,80 @@ export class MCPProxy {
     });
   }
 
-  private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
-    return this.openApiLookup[operationId] ?? null;
+  private async handleGetObject(
+    operation: OpenAPIV3.OperationObject & { method: string; path: string },
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const spaceId = params?.space_id as string;
+    const objectId = params?.object_id as string;
+
+    // Check cache first
+    if (spaceId && objectId) {
+      const cached = this.objectCache.get(spaceId, objectId);
+      if (cached) {
+        console.error(`Cache hit for ${spaceId}:${objectId}`);
+        return {
+          content: [{ type: "text", text: JSON.stringify(cached.data) }],
+        };
+      }
+    }
+
+    // Cache miss — fetch from API
+    const response = await this.httpClient.executeOperation(operation, params);
+
+    // Cache the result
+    if (spaceId && objectId && response.data) {
+      this.objectCache.set(spaceId, objectId, response.data as Record<string, unknown>);
+      console.error(`Cached object ${spaceId}:${objectId}`);
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(response.data) }],
+    };
   }
 
-  private getContentType(headers: Headers): "text" | "image" | "binary" {
-    const contentType = headers.get("content-type");
-    if (!contentType) return "binary";
+  private handleCacheStats(
+    params: Record<string, unknown> | undefined,
+  ): { content: Array<{ type: string; text: string }> } {
+    const spaceId = params?.space_id as string | undefined;
+    const stats = this.objectCache.getStats(spaceId);
+    return {
+      content: [{ type: "text", text: JSON.stringify(stats) }],
+    };
+  }
 
-    if (contentType.includes("text") || contentType.includes("json")) {
-      return "text";
-    } else if (contentType.includes("image")) {
-      return "image";
+  private handleGetCachedContent(
+    params: Record<string, unknown> | undefined,
+  ): { content: Array<{ type: string; text: string }> } {
+    const spaceId = params?.space_id as string | undefined;
+    const objectId = params?.object_id as string | undefined;
+
+    if (!spaceId || !objectId) {
+      throw new Error("space_id and object_id are required");
     }
-    return "binary";
+
+    const cached = this.objectCache.get(spaceId, objectId);
+    if (!cached) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "miss",
+              message: `Object ${objectId} not found in cache. Use API-get-object to fetch it first.`,
+            }),
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(cached.data) }],
+    };
+  }
+
+  private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
+    return this.openApiLookup[operationId] ?? null;
   }
 
   private truncateToolName(name: string): string {
