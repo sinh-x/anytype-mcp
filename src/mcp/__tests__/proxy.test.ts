@@ -1,3 +1,4 @@
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Headers } from "node-fetch";
 import { OpenAPIV3 } from "openapi-types";
@@ -14,6 +15,7 @@ vi.mock("../../config/credentials", () => ({
 }));
 
 const mockLoadCredentials = vi.mocked(loadCredentials);
+const MockServer = vi.mocked(Server);
 
 describe("MCPProxy", () => {
   let proxy: MCPProxy;
@@ -207,6 +209,28 @@ describe("MCPProxy", () => {
       delete process.env.ANYTYPE_API_BASE_URL;
       new MCPProxy("test-proxy", createMockOpenApiSpec({ servers: undefined }));
       expectBaseUrl("http://127.0.0.1:31009");
+    });
+  });
+
+  describe("instructions", () => {
+    it("should pass instructions to Server when provided", () => {
+      MockServer.mockClear();
+
+      new MCPProxy("test-proxy", mockOpenApiSpec, "Available spaces:\n- MySpace (id: abc123)");
+
+      expect(MockServer).toHaveBeenCalledWith(
+        { name: "test-proxy", version: "1.0.0" },
+        expect.objectContaining({ instructions: "Available spaces:\n- MySpace (id: abc123)" }),
+      );
+    });
+
+    it("should not include instructions when not provided", () => {
+      MockServer.mockClear();
+
+      new MCPProxy("test-proxy", mockOpenApiSpec);
+
+      const serverOptions = MockServer.mock.calls[0][1];
+      expect(serverOptions).not.toHaveProperty("instructions");
     });
   });
 
