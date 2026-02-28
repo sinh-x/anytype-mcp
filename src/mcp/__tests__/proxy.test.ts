@@ -280,7 +280,7 @@ describe("MCPProxy", () => {
       expect(JSON.parse(result2.content[0].text)).toEqual(mockObjectResponse.data);
     });
 
-    it("should invalidate cache on update-object", async () => {
+    it("should write-through cache on update-object", async () => {
       const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
       mockExecute.mockResolvedValue(mockObjectResponse);
 
@@ -290,15 +290,29 @@ describe("MCPProxy", () => {
       // Cache the object
       await callToolHandler({ params: { name: "API-get-object", arguments: args } });
 
-      // Update it
-      mockExecute.mockResolvedValue({ data: { ok: true }, status: 200, headers: new Headers() });
+      // Update it — API returns the updated object
+      const updatedResponse = {
+        data: {
+          object: {
+            id: "obj-1",
+            name: "Updated Object",
+            type: { key: "page", name: "Page" },
+            properties: [{ key: "last_modified_date", date: "2025-06-02T12:00:00Z" }],
+            markdown: "# Updated",
+          },
+        },
+        status: 200,
+        headers: new Headers(),
+      };
+      mockExecute.mockResolvedValue(updatedResponse);
       await callToolHandler({ params: { name: "API-update-object", arguments: args } });
 
-      // Next get should fetch from API again
+      // Next get should return from cache (no API call) with updated data
       mockExecute.mockClear();
-      mockExecute.mockResolvedValue(mockObjectResponse);
-      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
-      expect(mockExecute).toHaveBeenCalledTimes(1);
+      const result = await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).not.toHaveBeenCalled();
+      const data = JSON.parse(result.content[0].text);
+      expect(data.object.name).toBe("Updated Object");
     });
 
     it("should invalidate cache on delete-object", async () => {
@@ -328,6 +342,7 @@ describe("MCPProxy", () => {
 
       const toolNames = result.tools.map((t: Tool) => t.name);
       expect(toolNames).toContain("API-batch-get-objects");
+      expect(toolNames).toContain("API-batch-update-objects");
       expect(toolNames).toContain("API-cache-stats");
       expect(toolNames).toContain("API-get-cached-content");
     });
@@ -533,6 +548,140 @@ describe("MCPProxy", () => {
       });
       const data = JSON.parse(cachedResult.content[0].text);
       expect(data.object.name).toBe("Cached");
+    });
+  });
+
+  describe("batch update-objects", () => {
+    const makeUpdatedObjResponse = (id: string, name: string) => ({
+      data: {
+        object: {
+          id,
+          name,
+          type: { key: "page", name: "Page" },
+          layout: "basic",
+          snippet: `Updated ${name}`,
+          markdown: `# ${name}\n\nUpdated content`,
+          properties: [{ key: "last_modified_date", date: "2025-06-02T12:00:00Z" }],
+        },
+      },
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+    });
+
+    beforeEach(() => {
+      (proxy as any).openApiLookup = {
+        "API-update-object": {
+          operationId: "update_object",
+          method: "patch",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+        "API-get-object": {
+          operationId: "get_object",
+          method: "get",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+      };
+    });
+
+    it("should update multiple objects and return summaries", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute
+        .mockResolvedValueOnce(makeUpdatedObjResponse("obj-1", "Updated First"))
+        .mockResolvedValueOnce(makeUpdatedObjResponse("obj-2", "Updated Second"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-update-objects",
+          arguments: {
+            space_id: "space-1",
+            updates: [
+              { object_id: "obj-1", name: "Updated First" },
+              { object_id: "obj-2", markdown: "New content" },
+            ],
+          },
+        },
+      });
+
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries).toHaveLength(2);
+      expect(summaries[0].name).toBe("Updated First");
+      expect(summaries[1].name).toBe("Updated Second");
+    });
+
+    it("should write-through cache for batch-updated objects", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValueOnce(makeUpdatedObjResponse("obj-1", "Batch Updated"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      await callToolHandler({
+        params: {
+          name: "API-batch-update-objects",
+          arguments: {
+            space_id: "space-1",
+            updates: [{ object_id: "obj-1", name: "Batch Updated" }],
+          },
+        },
+      });
+
+      // Object should be in cache — get from cache without API call
+      mockExecute.mockClear();
+      const cachedResult = await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1" } },
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+      const data = JSON.parse(cachedResult.content[0].text);
+      expect(data.object.name).toBe("Batch Updated");
+    });
+
+    it("should handle individual update errors gracefully", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute
+        .mockResolvedValueOnce(makeUpdatedObjResponse("obj-1", "Good"))
+        .mockRejectedValueOnce(new Error("Not found"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-update-objects",
+          arguments: {
+            space_id: "space-1",
+            updates: [
+              { object_id: "obj-1", name: "Good" },
+              { object_id: "obj-bad", name: "Will fail" },
+            ],
+          },
+        },
+      });
+
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries).toHaveLength(2);
+      expect(summaries[0].name).toBe("Good");
+      expect(summaries[1].status).toBe("error");
+      expect(summaries[1].object_id).toBe("obj-bad");
+    });
+
+    it("should reject empty updates array", async () => {
+      const [, callToolHandler] = getHandlers(proxy);
+
+      await expect(
+        callToolHandler({
+          params: { name: "API-batch-update-objects", arguments: { space_id: "space-1", updates: [] } },
+        }),
+      ).rejects.toThrow("updates must be a non-empty array");
+    });
+
+    it("should reject more than 20 updates", async () => {
+      const [, callToolHandler] = getHandlers(proxy);
+      const updates = Array.from({ length: 21 }, (_, i) => ({ object_id: `obj-${i}`, name: `Name ${i}` }));
+
+      await expect(
+        callToolHandler({
+          params: { name: "API-batch-update-objects", arguments: { space_id: "space-1", updates } },
+        }),
+      ).rejects.toThrow("updates cannot exceed 20 items");
     });
   });
 
