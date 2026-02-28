@@ -56,9 +56,8 @@ export class OpenAPIToMCPConverter {
   ): IJsonSchema {
     if ("$ref" in schema) {
       const ref = schema.$ref;
-      // TODO: Add support for filters
       if (ref === "#/components/schemas/FilterExpression") {
-        return {};
+        return buildFilterExpressionSchema();
       }
       if (!resolveRefs) {
         if (ref.startsWith("#/components/schemas/")) {
@@ -460,12 +459,10 @@ export class OpenAPIToMCPConverter {
           );
           if (bodySchema.type === "object" && bodySchema.properties) {
             for (const [name, propSchema] of Object.entries(bodySchema.properties)) {
-              // TODO: Add support for filters
-              if (name === "filters") continue;
               schema.properties![name] = propSchema;
             }
             if (bodySchema.required) {
-              schema.required!.push(...bodySchema.required.filter((r) => r !== "filters"));
+              schema.required!.push(...bodySchema.required);
             }
           }
         }
@@ -589,12 +586,10 @@ export class OpenAPIToMCPConverter {
           );
           if (formSchema.type === "object" && formSchema.properties) {
             for (const [name, propSchema] of Object.entries(formSchema.properties)) {
-              // TODO: Add support for filters
-              if (name === "filters") continue;
               inputSchema.properties![name] = propSchema;
             }
             if (formSchema.required) {
-              inputSchema.required!.push(...formSchema.required!.filter((r) => r !== "filters"));
+              inputSchema.required!.push(...formSchema.required!);
             }
           }
         }
@@ -608,12 +603,10 @@ export class OpenAPIToMCPConverter {
           // Merge body schema into the inputSchema's properties
           if (bodySchema.type === "object" && bodySchema.properties) {
             for (const [name, propSchema] of Object.entries(bodySchema.properties)) {
-              // TODO: Add support for filters
-              if (name === "filters") continue;
               inputSchema.properties![name] = propSchema;
             }
             if (bodySchema.required) {
-              inputSchema.required!.push(...bodySchema.required!.filter((r) => r !== "filters"));
+              inputSchema.required!.push(...bodySchema.required!);
             }
           } else {
             // If the request body is not an object, just put it under "body"
@@ -715,4 +708,146 @@ export class OpenAPIToMCPConverter {
     this.nameCounter += 1;
     return this.nameCounter.toString().padStart(4, "0");
   }
+}
+
+const FILTER_CONDITIONS = [
+  "equal",
+  "not_equal",
+  "greater",
+  "less",
+  "greater_or_equal",
+  "less_or_equal",
+  "like",
+  "not_like",
+  "in",
+  "not_in",
+  "empty",
+  "not_empty",
+  "all_in",
+  "not_all_in",
+  "exact_in",
+  "not_exact_in",
+  "exists",
+] as const;
+
+/**
+ * Builds a flattened JSON Schema for FilterExpression, matching the pattern
+ * used for PropertyValue and Icon (hardcoded schema instead of $ref resolution).
+ *
+ * FilterItem is represented as a flat object with all possible value fields,
+ * so AI agents can construct filters without needing to pick a specific subtype.
+ */
+function buildFilterExpressionSchema(): IJsonSchema {
+  const filterItemSchema: IJsonSchema = {
+    type: "object",
+    description: "A filter condition. Set property_key, condition, and the appropriate value field for the property type.",
+    properties: {
+      property_key: {
+        type: "string",
+        description: "The property key to filter on",
+        examples: ["name", "description", "status", "last_modified_date"],
+      },
+      condition: {
+        type: "string",
+        description: "The filter condition operator",
+        enum: [...FILTER_CONDITIONS],
+      },
+      text: {
+        type: "string",
+        description: "Text value (for text properties). Use with like/not_like for substring match.",
+        examples: ["Some text..."],
+      },
+      number: {
+        type: "number",
+        description: "Number value (for number properties)",
+        examples: [42],
+      },
+      select: {
+        type: "string",
+        description: "Tag ID (for select properties, single selection)",
+        examples: ["tag_id"],
+      },
+      multi_select: {
+        type: "array",
+        description: "Tag IDs (for multi_select properties)",
+        items: { type: "string" },
+        examples: [["tag_id_1", "tag_id_2"]],
+      },
+      date: {
+        type: "string",
+        description: "Date value in RFC3339 (2006-01-02T15:04:05Z) or date-only (2006-01-02) format",
+        examples: ["2025-01-15T00:00:00Z"],
+      },
+      checkbox: {
+        type: "boolean",
+        description: "Checkbox value (for checkbox properties)",
+        examples: [true],
+      },
+      url: {
+        type: "string",
+        description: "URL value (for url properties)",
+        examples: ["https://example.com"],
+      },
+      email: {
+        type: "string",
+        description: "Email value (for email properties)",
+        examples: ["user@example.com"],
+      },
+      phone: {
+        type: "string",
+        description: "Phone value (for phone properties)",
+        examples: ["+1234567890"],
+      },
+      objects: {
+        type: "array",
+        description: "Object IDs (for object/relation properties)",
+        items: { type: "string" },
+        examples: [["object_id"]],
+      },
+      files: {
+        type: "array",
+        description: "File IDs (for file properties)",
+        items: { type: "string" },
+        examples: [["file_id"]],
+      },
+    },
+    additionalProperties: true,
+  };
+
+  return {
+    type: "object",
+    description: "Expression filter with nested AND/OR conditions",
+    properties: {
+      operator: {
+        type: "string",
+        description: "Logical operator for combining filters",
+        enum: ["and", "or"],
+      },
+      conditions: {
+        type: "array",
+        description: "List of filter conditions",
+        items: filterItemSchema,
+      },
+      filters: {
+        type: "array",
+        description: "Nested filter expressions for complex logic (one level of nesting)",
+        items: {
+          type: "object",
+          description: "Nested filter expression",
+          properties: {
+            operator: {
+              type: "string",
+              enum: ["and", "or"],
+            },
+            conditions: {
+              type: "array",
+              items: filterItemSchema,
+            },
+          },
+          additionalProperties: true,
+        },
+      },
+    },
+    additionalProperties: true,
+  };
 }
