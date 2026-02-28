@@ -3,8 +3,9 @@ import axios from "axios";
 import fs from "node:fs";
 import path from "node:path";
 import { OpenAPIV3 } from "openapi-types";
+import { loadCredentials } from "./config/credentials";
 import { MCPProxy } from "./mcp/proxy";
-import { getDefaultSpecUrl } from "./utils/base-url";
+import { determineBaseUrl, getDefaultSpecUrl } from "./utils/base-url";
 
 export class ValidationError extends Error {
   constructor(public errors: any[]) {
@@ -47,10 +48,45 @@ export async function loadOpenApiSpec(specPath?: string): Promise<OpenAPIV3.Docu
   }
 }
 
+interface Space {
+  id: string;
+  name: string;
+}
+
+/**
+ * Prefetches spaces from the Anytype API and formats them as an instructions string.
+ * Returns undefined on failure (non-fatal).
+ */
+export async function prefetchSpaces(openApiSpec: OpenAPIV3.Document): Promise<string | undefined> {
+  try {
+    const { headers, baseUrl: credentialsBaseUrl } = loadCredentials();
+    const baseUrl = determineBaseUrl(openApiSpec, credentialsBaseUrl);
+
+    const response = await axios.get(`${baseUrl}/v1/spaces`, {
+      params: { limit: 1000 },
+      headers,
+    });
+
+    const spaces: Space[] = response.data?.data ?? response.data?.spaces ?? [];
+    if (spaces.length === 0) {
+      console.error("No spaces found during prefetch");
+      return undefined;
+    }
+
+    const spaceList = spaces.map((s) => `- "${s.name}" (id: ${s.id})`).join("\n");
+    return `Available Anytype spaces:\n${spaceList}\n\nUse the space id when calling space-scoped tools.`;
+  } catch (error: any) {
+    console.error("Failed to prefetch spaces (non-fatal):", error.message);
+    return undefined;
+  }
+}
+
 export async function initProxy(specPath: string) {
   console.error("Initializing Anytype MCP Server...");
   const openApiSpec = await loadOpenApiSpec(specPath);
-  const proxy = new MCPProxy("Anytype API", openApiSpec);
+
+  const instructions = await prefetchSpaces(openApiSpec);
+  const proxy = new MCPProxy("Anytype API", openApiSpec, instructions);
 
   await proxy.connect(new StdioServerTransport());
   console.error("Anytype MCP Server running on stdio");

@@ -33,8 +33,11 @@ export class MCPProxy {
   private tools: Record<string, NewToolDefinition>;
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>;
 
-  constructor(name: string, openApiSpec: OpenAPIV3.Document) {
-    this.server = new Server({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
+  constructor(name: string, openApiSpec: OpenAPIV3.Document, instructions?: string) {
+    this.server = new Server(
+      { name, version: "1.0.0" },
+      { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
+    );
     const { headers, baseUrl: credentialsBaseUrl } = loadCredentials();
     const baseUrl = determineBaseUrl(openApiSpec, credentialsBaseUrl);
     this.httpClient = new HttpClient(
