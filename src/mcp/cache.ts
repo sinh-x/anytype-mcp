@@ -82,6 +82,47 @@ export const GET_CACHED_CONTENT_TOOL: Tool = {
   },
 };
 
+export const BATCH_UPDATE_OBJECTS_TOOL_NAME = "API-batch-update-objects";
+
+export const BATCH_UPDATE_OBJECTS_TOOL: Tool = {
+  name: BATCH_UPDATE_OBJECTS_TOOL_NAME,
+  description:
+    "Update multiple objects in a single call. Each update specifies an object_id and the fields to change " +
+    "(name, markdown, icon, properties, type_key). Returns summaries of all updated objects. " +
+    "Maximum 20 objects per call.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      space_id: {
+        type: "string",
+        description: "The ID of the space containing the objects",
+      },
+      updates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            object_id: { type: "string", description: "The ID of the object to update" },
+            name: { type: "string", description: "New name for the object" },
+            markdown: { type: "string", description: "New body content" },
+            icon: { type: "object", description: "New icon (emoji format)" },
+            properties: {
+              type: "array",
+              items: { type: "object" },
+              description: "Properties to set",
+            },
+            type_key: { type: "string", description: "New type key" },
+          },
+          required: ["object_id"],
+        },
+        description: "Array of update payloads, each with object_id and fields to change",
+        maxItems: 20,
+      },
+    },
+    required: ["space_id", "updates"],
+  },
+};
+
 export const BATCH_GET_OBJECTS_TOOL: Tool = {
   name: BATCH_GET_OBJECTS_TOOL_NAME,
   description:

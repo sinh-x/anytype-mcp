@@ -6,6 +6,8 @@ import { OpenAPIV3 } from "openapi-types";
 import {
   BATCH_GET_OBJECTS_TOOL,
   BATCH_GET_OBJECTS_TOOL_NAME,
+  BATCH_UPDATE_OBJECTS_TOOL,
+  BATCH_UPDATE_OBJECTS_TOOL_NAME,
   CACHE_STATS_TOOL,
   CACHE_STATS_TOOL_NAME,
   GET_CACHED_CONTENT_TOOL,
@@ -79,6 +81,7 @@ export class MCPProxy {
 
       // Add custom tools
       tools.push(BATCH_GET_OBJECTS_TOOL);
+      tools.push(BATCH_UPDATE_OBJECTS_TOOL);
       tools.push(CACHE_STATS_TOOL);
       tools.push(GET_CACHED_CONTENT_TOOL);
 
@@ -93,6 +96,9 @@ export class MCPProxy {
       // Handle custom tools
       if (name === BATCH_GET_OBJECTS_TOOL_NAME) {
         return this.handleBatchGetObjects(params);
+      }
+      if (name === BATCH_UPDATE_OBJECTS_TOOL_NAME) {
+        return this.handleBatchUpdateObjects(params);
       }
       if (name === CACHE_STATS_TOOL_NAME) {
         return this.handleCacheStats(params);
@@ -117,13 +123,21 @@ export class MCPProxy {
         // Execute the operation
         const response = await this.httpClient.executeOperation(operation, params);
 
-        // Post-operation cache invalidation
-        if (name === "API-update-object" || name === "API-delete-object") {
+        // Post-operation cache handling
+        if (name === "API-update-object") {
+          const spaceId = params?.space_id as string;
+          const objectId = params?.object_id as string;
+          if (spaceId && objectId && response.data) {
+            // Write-through: cache the updated object from the response
+            this.objectCache.set(spaceId, objectId, response.data as Record<string, unknown>);
+            console.error(`Cache write-through for ${spaceId}:${objectId} after update`);
+          }
+        } else if (name === "API-delete-object") {
           const spaceId = params?.space_id as string;
           const objectId = params?.object_id as string;
           if (spaceId && objectId) {
             this.objectCache.invalidate(spaceId, objectId);
-            console.error(`Cache invalidated for ${spaceId}:${objectId} after ${name}`);
+            console.error(`Cache invalidated for ${spaceId}:${objectId} after delete`);
           }
         }
 
@@ -271,6 +285,76 @@ export class MCPProxy {
 
     return {
       content: [{ type: "text", text: JSON.stringify(summaries) }],
+    };
+  }
+
+  private async handleBatchUpdateObjects(
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const spaceId = params?.space_id as string | undefined;
+    const updates = params?.updates as Array<Record<string, unknown>> | undefined;
+
+    if (!spaceId) {
+      throw new Error("space_id is required");
+    }
+    if (!updates || !Array.isArray(updates) || updates.length === 0) {
+      throw new Error("updates must be a non-empty array");
+    }
+    if (updates.length > 20) {
+      throw new Error("updates cannot exceed 20 items");
+    }
+
+    const operation = this.findOperation("API-update-object");
+    if (!operation) {
+      throw new Error("update-object operation not found in OpenAPI spec");
+    }
+
+    const CONCURRENCY = 5;
+    const results: Array<
+      | import("./cache").ObjectSummary
+      | { object_id: string; status: "error"; error: string }
+    > = [];
+
+    for (let i = 0; i < updates.length; i += CONCURRENCY) {
+      const batch = updates.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (update) => {
+          const objectId = update.object_id as string;
+          if (!objectId) throw new Error("object_id is required in each update");
+
+          // Build params: space_id + object_id + update fields
+          const { object_id, ...updateFields } = update;
+          const callParams = { space_id: spaceId, object_id: objectId, ...updateFields };
+
+          const response = await this.httpClient.executeOperation(operation, callParams);
+          const data = response.data as Record<string, unknown>;
+
+          // Write-through: cache the updated object
+          this.objectCache.set(spaceId, objectId, data);
+          console.error(`Batch update: write-through cache for ${spaceId}:${objectId}`);
+
+          return this.objectCache.get(spaceId, objectId)!;
+        }),
+      );
+
+      for (let j = 0; j < settled.length; j++) {
+        const result = settled[j];
+        const objectId = batch[j].object_id as string;
+        if (result.status === "fulfilled") {
+          results.push(this.objectCache.buildSummary(result.value));
+        } else {
+          const err = result.reason;
+          const errorMsg =
+            err instanceof HttpClientError
+              ? JSON.stringify(err.data?.response?.data ?? err.data ?? err.message)
+              : String(err);
+          results.push({ object_id: objectId, status: "error", error: errorMsg });
+        }
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(results) }],
     };
   }
 
