@@ -40,6 +40,7 @@ const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export const CACHE_STATS_TOOL_NAME = "API-cache-stats";
 export const GET_CACHED_CONTENT_TOOL_NAME = "API-get-cached-content";
+export const BATCH_GET_OBJECTS_TOOL_NAME = "API-batch-get-objects";
 
 export const CACHE_STATS_TOOL: Tool = {
   name: CACHE_STATS_TOOL_NAME,
@@ -78,6 +79,30 @@ export const GET_CACHED_CONTENT_TOOL: Tool = {
       },
     },
     required: ["space_id", "object_id"],
+  },
+};
+
+export const BATCH_GET_OBJECTS_TOOL: Tool = {
+  name: BATCH_GET_OBJECTS_TOOL_NAME,
+  description:
+    "Fetch multiple objects by ID in a single call. Returns summaries (name, type, size, snippet) instead of full content " +
+    "to avoid bloating context. Use API-get-cached-content to retrieve full content for specific objects afterward. " +
+    "Maximum 50 objects per call.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      space_id: {
+        type: "string",
+        description: "The ID of the space containing the objects",
+      },
+      object_ids: {
+        type: "array",
+        items: { type: "string" },
+        description: "Array of object IDs to fetch",
+        maxItems: 50,
+      },
+    },
+    required: ["space_id", "object_ids"],
   },
 };
 

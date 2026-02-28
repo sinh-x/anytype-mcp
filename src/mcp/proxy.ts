@@ -4,6 +4,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from "@modelconte
 import { JSONSchema7 as IJsonSchema } from "json-schema";
 import { OpenAPIV3 } from "openapi-types";
 import {
+  BATCH_GET_OBJECTS_TOOL,
+  BATCH_GET_OBJECTS_TOOL_NAME,
   CACHE_STATS_TOOL,
   CACHE_STATS_TOOL_NAME,
   GET_CACHED_CONTENT_TOOL,
@@ -76,6 +78,7 @@ export class MCPProxy {
       });
 
       // Add custom tools
+      tools.push(BATCH_GET_OBJECTS_TOOL);
       tools.push(CACHE_STATS_TOOL);
       tools.push(GET_CACHED_CONTENT_TOOL);
 
@@ -88,6 +91,9 @@ export class MCPProxy {
       const { name, arguments: params } = request.params;
 
       // Handle custom tools
+      if (name === BATCH_GET_OBJECTS_TOOL_NAME) {
+        return this.handleBatchGetObjects(params);
+      }
       if (name === CACHE_STATS_TOOL_NAME) {
         return this.handleCacheStats(params);
       }
@@ -195,6 +201,76 @@ export class MCPProxy {
 
     return {
       content: [{ type: "text", text: JSON.stringify(response.data) }],
+    };
+  }
+
+  private async handleBatchGetObjects(
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const spaceId = params?.space_id as string | undefined;
+    const objectIds = params?.object_ids as string[] | undefined;
+
+    if (!spaceId) {
+      throw new Error("space_id is required");
+    }
+    if (!objectIds || !Array.isArray(objectIds) || objectIds.length === 0) {
+      throw new Error("object_ids must be a non-empty array");
+    }
+    if (objectIds.length > 50) {
+      throw new Error("object_ids cannot exceed 50 items");
+    }
+
+    const operation = this.findOperation("API-get-object");
+    if (!operation) {
+      throw new Error("get-object operation not found in OpenAPI spec");
+    }
+
+    const CONCURRENCY = 10;
+    const summaries: Array<
+      | import("./cache").ObjectSummary
+      | { object_id: string; status: "error"; error: string }
+    > = [];
+
+    for (let i = 0; i < objectIds.length; i += CONCURRENCY) {
+      const batch = objectIds.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (objectId) => {
+          // Check cache first
+          const cached = this.objectCache.get(spaceId, objectId);
+          if (cached) {
+            console.error(`Batch: cache hit for ${spaceId}:${objectId}`);
+            return cached;
+          }
+
+          // Fetch from API and cache
+          const response = await this.httpClient.executeOperation(operation, {
+            space_id: spaceId,
+            object_id: objectId,
+          });
+          const data = response.data as Record<string, unknown>;
+          this.objectCache.set(spaceId, objectId, data);
+          return this.objectCache.get(spaceId, objectId)!;
+        }),
+      );
+
+      for (let j = 0; j < settled.length; j++) {
+        const result = settled[j];
+        const objectId = batch[j];
+        if (result.status === "fulfilled") {
+          summaries.push(this.objectCache.buildSummary(result.value));
+        } else {
+          const err = result.reason;
+          const errorMsg =
+            err instanceof HttpClientError
+              ? JSON.stringify(err.data?.response?.data ?? err.data ?? err.message)
+              : String(err);
+          summaries.push({ object_id: objectId, status: "error", error: errorMsg });
+        }
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(summaries) }],
     };
   }
 

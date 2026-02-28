@@ -322,11 +322,12 @@ describe("MCPProxy", () => {
       expect(mockExecute).toHaveBeenCalledTimes(1);
     });
 
-    it("should list custom tools including cache tools", async () => {
+    it("should list custom tools including cache and batch tools", async () => {
       const [listToolsHandler] = getHandlers(proxy);
       const result = await listToolsHandler();
 
       const toolNames = result.tools.map((t: Tool) => t.name);
+      expect(toolNames).toContain("API-batch-get-objects");
       expect(toolNames).toContain("API-cache-stats");
       expect(toolNames).toContain("API-get-cached-content");
     });
@@ -384,6 +385,154 @@ describe("MCPProxy", () => {
       });
       const data = JSON.parse(result.content[0].text);
       expect(data.status).toBe("miss");
+    });
+  });
+
+  describe("batch get-objects", () => {
+    const makeObjResponse = (id: string, name: string) => ({
+      data: {
+        object: {
+          id,
+          name,
+          type: { key: "page", name: "Page" },
+          layout: "basic",
+          snippet: `Preview of ${name}`,
+          markdown: `# ${name}\n\nFull body content...`,
+          properties: [{ key: "last_modified_date", date: "2025-06-01T12:00:00Z" }],
+        },
+      },
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+    });
+
+    beforeEach(() => {
+      (proxy as any).openApiLookup = {
+        "API-get-object": {
+          operationId: "get_object",
+          method: "get",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+      };
+    });
+
+    it("should fetch multiple objects and return summaries", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute
+        .mockResolvedValueOnce(makeObjResponse("obj-1", "First"))
+        .mockResolvedValueOnce(makeObjResponse("obj-2", "Second"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-get-objects",
+          arguments: { space_id: "space-1", object_ids: ["obj-1", "obj-2"] },
+        },
+      });
+
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries).toHaveLength(2);
+      expect(summaries[0].name).toBe("First");
+      expect(summaries[0].object_id).toBe("obj-1");
+      expect(summaries[0].size_bytes).toBeGreaterThan(0);
+      expect(summaries[0].has_body).toBe(true);
+      expect(summaries[1].name).toBe("Second");
+      // Summaries should not contain full body content
+      expect(summaries[0]).not.toHaveProperty("markdown");
+    });
+
+    it("should use cache for already-cached objects", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValueOnce(makeObjResponse("obj-1", "First"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+
+      // Pre-cache obj-1 via get-object
+      await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1" } },
+      });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+
+      // Batch fetch — obj-1 from cache, obj-2 from API
+      mockExecute.mockClear();
+      mockExecute.mockResolvedValueOnce(makeObjResponse("obj-2", "Second"));
+
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-get-objects",
+          arguments: { space_id: "space-1", object_ids: ["obj-1", "obj-2"] },
+        },
+      });
+
+      // Only obj-2 should have triggered an API call
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries).toHaveLength(2);
+    });
+
+    it("should handle errors for individual objects gracefully", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute
+        .mockResolvedValueOnce(makeObjResponse("obj-1", "Good"))
+        .mockRejectedValueOnce(new Error("Not found"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-get-objects",
+          arguments: { space_id: "space-1", object_ids: ["obj-1", "obj-bad"] },
+        },
+      });
+
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries).toHaveLength(2);
+      expect(summaries[0].name).toBe("Good");
+      expect(summaries[1].status).toBe("error");
+      expect(summaries[1].object_id).toBe("obj-bad");
+    });
+
+    it("should reject empty object_ids", async () => {
+      const [, callToolHandler] = getHandlers(proxy);
+
+      await expect(
+        callToolHandler({
+          params: { name: "API-batch-get-objects", arguments: { space_id: "space-1", object_ids: [] } },
+        }),
+      ).rejects.toThrow("object_ids must be a non-empty array");
+    });
+
+    it("should reject more than 50 object_ids", async () => {
+      const [, callToolHandler] = getHandlers(proxy);
+      const ids = Array.from({ length: 51 }, (_, i) => `obj-${i}`);
+
+      await expect(
+        callToolHandler({
+          params: { name: "API-batch-get-objects", arguments: { space_id: "space-1", object_ids: ids } },
+        }),
+      ).rejects.toThrow("object_ids cannot exceed 50 items");
+    });
+
+    it("should populate cache for batch-fetched objects", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValueOnce(makeObjResponse("obj-1", "Cached"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+      await callToolHandler({
+        params: {
+          name: "API-batch-get-objects",
+          arguments: { space_id: "space-1", object_ids: ["obj-1"] },
+        },
+      });
+
+      // Object should now be in cache — get-cached-content should work
+      const cachedResult = await callToolHandler({
+        params: {
+          name: "API-get-cached-content",
+          arguments: { space_id: "space-1", object_id: "obj-1" },
+        },
+      });
+      const data = JSON.parse(cachedResult.content[0].text);
+      expect(data.object.name).toBe("Cached");
     });
   });
 
