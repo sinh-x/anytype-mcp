@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Headers } from "node-fetch";
 import { OpenAPIV3 } from "openapi-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -135,18 +136,6 @@ describe("MCPProxy", () => {
     });
   });
 
-  describe("getContentType", () => {
-    it("should return correct content type for different headers", () => {
-      const getContentType = (proxy as any).getContentType.bind(proxy);
-
-      expect(getContentType(new Headers({ "content-type": "text/plain" }))).toBe("text");
-      expect(getContentType(new Headers({ "content-type": "application/json" }))).toBe("text");
-      expect(getContentType(new Headers({ "content-type": "image/jpeg" }))).toBe("image");
-      expect(getContentType(new Headers({ "content-type": "application/octet-stream" }))).toBe("binary");
-      expect(getContentType(new Headers())).toBe("binary");
-    });
-  });
-
   describe("loadCredentials integration", () => {
     const expectHeaders = (headers: Record<string, string>) => {
       expect(HttpClient).toHaveBeenCalledWith(expect.objectContaining({ headers }), expect.anything());
@@ -231,6 +220,170 @@ describe("MCPProxy", () => {
 
       const serverOptions = MockServer.mock.calls[0][1];
       expect(serverOptions).not.toHaveProperty("instructions");
+    });
+  });
+
+  describe("cache integration", () => {
+    const mockObjectResponse = {
+      data: {
+        object: {
+          id: "obj-1",
+          name: "Test Object",
+          type: { key: "page", name: "Page" },
+          properties: [{ key: "last_modified_date", date: "2025-06-01T12:00:00Z" }],
+          markdown: "# Content",
+        },
+      },
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+    };
+
+    beforeEach(() => {
+      (proxy as any).openApiLookup = {
+        "API-get-object": {
+          operationId: "get_object",
+          method: "get",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+        "API-update-object": {
+          operationId: "update_object",
+          method: "patch",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+        "API-delete-object": {
+          operationId: "delete_object",
+          method: "delete",
+          path: "/v1/spaces/{space_id}/objects/{object_id}",
+          responses: { "200": { description: "Success" } },
+        },
+      };
+    });
+
+    it("should cache get-object response and return cached on second call", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const args = { space_id: "space-1", object_id: "obj-1" };
+
+      // First call — fetches from API
+      const result1 = await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result1.content[0].text)).toEqual(mockObjectResponse.data);
+
+      // Second call — should be from cache
+      mockExecute.mockClear();
+      const result2 = await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).not.toHaveBeenCalled();
+      expect(JSON.parse(result2.content[0].text)).toEqual(mockObjectResponse.data);
+    });
+
+    it("should invalidate cache on update-object", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const args = { space_id: "space-1", object_id: "obj-1" };
+
+      // Cache the object
+      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+
+      // Update it
+      mockExecute.mockResolvedValue({ data: { ok: true }, status: 200, headers: new Headers() });
+      await callToolHandler({ params: { name: "API-update-object", arguments: args } });
+
+      // Next get should fetch from API again
+      mockExecute.mockClear();
+      mockExecute.mockResolvedValue(mockObjectResponse);
+      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it("should invalidate cache on delete-object", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const args = { space_id: "space-1", object_id: "obj-1" };
+
+      // Cache the object
+      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+
+      // Delete it
+      mockExecute.mockResolvedValue({ data: { ok: true }, status: 200, headers: new Headers() });
+      await callToolHandler({ params: { name: "API-delete-object", arguments: args } });
+
+      // Next get should fetch from API again
+      mockExecute.mockClear();
+      mockExecute.mockResolvedValue(mockObjectResponse);
+      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it("should list custom tools including cache tools", async () => {
+      const [listToolsHandler] = getHandlers(proxy);
+      const result = await listToolsHandler();
+
+      const toolNames = result.tools.map((t: Tool) => t.name);
+      expect(toolNames).toContain("API-cache-stats");
+      expect(toolNames).toContain("API-get-cached-content");
+    });
+
+    it("should return cache stats", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+
+      // Cache an object first
+      await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1" } },
+      });
+
+      // Get stats
+      const statsResult = await callToolHandler({ params: { name: "API-cache-stats", arguments: {} } });
+      const stats = JSON.parse(statsResult.content[0].text);
+
+      expect(stats.entry_count).toBe(1);
+      expect(stats.total_size_bytes).toBeGreaterThan(0);
+      expect(stats.entries[0].object_id).toBe("obj-1");
+    });
+
+    it("should return cached content via get-cached-content", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+
+      // Cache an object
+      await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1" } },
+      });
+
+      // Get it from cache
+      const cachedResult = await callToolHandler({
+        params: {
+          name: "API-get-cached-content",
+          arguments: { space_id: "space-1", object_id: "obj-1" },
+        },
+      });
+      const data = JSON.parse(cachedResult.content[0].text);
+      expect(data).toEqual(mockObjectResponse.data);
+    });
+
+    it("should return miss for uncached object in get-cached-content", async () => {
+      const [, callToolHandler] = getHandlers(proxy);
+
+      const result = await callToolHandler({
+        params: {
+          name: "API-get-cached-content",
+          arguments: { space_id: "space-1", object_id: "not-cached" },
+        },
+      });
+      const data = JSON.parse(result.content[0].text);
+      expect(data.status).toBe("miss");
     });
   });
 
