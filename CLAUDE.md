@@ -95,9 +95,19 @@ Tests use Vitest and are colocated with source files in `__tests__` directories.
 
 This is a fork of [anyproto/anytype-mcp](https://github.com/anyproto/anytype-mcp).
 
-- **`main`** — tracks upstream. Used only to sync with `anyproto/anytype-mcp`. Never commit directly here.
-- **`sinh-x-develop`** — personal development base branch. All feature work branches from and merges back into this branch.
+- **`main`** — tracks upstream. Used only to sync with `anyproto/anytype-mcp`. Never commit directly here. **Never merge `sinh-x-develop` (or any fork branch) into `main`** — it must stay a clean mirror of upstream.
+- **`sinh-x-develop`** — personal development base branch. All feature work branches from and merges back into this branch. Periodically rebase onto `main` to pick up upstream changes.
 - **Feature branches** — branch from `sinh-x-develop` using `feat/`, `fix/`, `chore/` prefixes (e.g., `feat/add-filters`). PR back into `sinh-x-develop`.
+
+### Fork Versioning
+
+Format: `{upstream-version}-sinh.{increment}`
+
+- `1.2.2-sinh.1` — first fork release on upstream 1.2.2
+- `1.2.2-sinh.2` — second fork release
+- `1.3.0-sinh.1` — first fork release after rebasing onto upstream 1.3.0
+
+Tags use `v` prefix (e.g., `v1.2.2-sinh.1`) and are applied on `sinh-x-develop` only. Bump the version in `package.json` and tag when merging feature branches.
 
 ## Code Style
 
