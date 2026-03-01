@@ -1,4 +1,5 @@
 import { AppKeyGenerator } from "../src/auth/get-key";
+import { grpcAuth } from "../src/auth/grpc-auth";
 import { initProxy, loadOpenApiSpec, ValidationError } from "../src/init-server";
 import { determineBaseUrl } from "../src/utils/base-url";
 
@@ -15,6 +16,8 @@ export async function main(args: string[] = process.argv.slice(2)) {
     await initProxy(specPath);
   } else if (command === "get-key") {
     await generateAppKey(specPath);
+  } else if (command === "grpc-auth") {
+    await grpcAuth();
   } else {
     console.error(`Error: Unknown command "${command}"`);
     process.exit(1);

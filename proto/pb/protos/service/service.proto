@@ -1,0 +1,17 @@
+// Vendored from anyproto/anytype-heart
+// Only includes RPCs needed for gRPC file operations and session management
+syntax = "proto3";
+package anytype;
+option go_package = "pb/protos/service";
+
+import "pb/protos/commands.proto";
+
+service ClientCommands {
+    // Session management
+    rpc WalletCreateSession (anytype.Rpc.Wallet.CreateSession.Request) returns (anytype.Rpc.Wallet.CreateSession.Response);
+    rpc WalletCloseSession (anytype.Rpc.Wallet.CloseSession.Request) returns (anytype.Rpc.Wallet.CloseSession.Response);
+
+    // File operations
+    rpc FileUpload (anytype.Rpc.File.Upload.Request) returns (anytype.Rpc.File.Upload.Response);
+    rpc FileDownload (anytype.Rpc.File.Download.Request) returns (anytype.Rpc.File.Download.Response);
+}

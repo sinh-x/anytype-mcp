@@ -1,19 +1,26 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { registerSecrets } from "../utils/sanitizer";
+import { registerSecret, registerSecrets } from "../utils/sanitizer";
 
 export const CREDENTIALS_PATH = path.join(os.homedir(), ".config", "sinh-x", "anytype-mcp", "credentials.json");
 
 interface CredentialsFile {
-  apiKey: string;
+  apiKey?: string;
   anytypeVersion?: string;
   baseUrl?: string;
+  grpcAppToken?: string;
+  grpcAddress?: string;
 }
 
 interface LoadedCredentials {
   headers: Record<string, string>;
   baseUrl?: string;
+}
+
+export interface GrpcCredentials {
+  address?: string;
+  appToken?: string;
 }
 
 /**
@@ -76,20 +83,72 @@ export function loadCredentials(): LoadedCredentials {
 }
 
 /**
- * Saves credentials to the config file, creating the directory if needed.
+ * Loads gRPC credentials with priority: env vars > config file.
+ * No default address — anytypeHelper uses dynamic ports, so grpcAddress must be explicitly configured.
  */
-export function saveCredentials(config: { apiKey: string; anytypeVersion: string; baseUrl?: string }): void {
+export function loadGrpcCredentials(): GrpcCredentials {
+  // Priority 1: Environment variables
+  const envToken = process.env.ANYTYPE_GRPC_TOKEN;
+  const envAddress = process.env.ANYTYPE_GRPC_ADDRESS;
+
+  if (envToken) {
+    registerSecret(envToken);
+    console.error(`Using gRPC credentials from environment variables (address: ${envAddress ?? "not set"})`);
+    return { address: envAddress, appToken: envToken };
+  }
+
+  // Priority 2: Config file
+  try {
+    if (fs.existsSync(CREDENTIALS_PATH)) {
+      const raw = fs.readFileSync(CREDENTIALS_PATH, "utf-8");
+      const config: CredentialsFile = JSON.parse(raw);
+
+      const address = config.grpcAddress ?? envAddress;
+
+      // Only use dedicated gRPC token (apiKey has JsonAPI scope which lacks FileUpload permission)
+      if (config.grpcAppToken) {
+        registerSecret(config.grpcAppToken);
+        console.error(`Loaded gRPC credentials from ${CREDENTIALS_PATH} (grpcAppToken, address: ${address ?? "not set"})`);
+        return { address, appToken: config.grpcAppToken };
+      }
+
+      return { address };
+    }
+  } catch (error) {
+    console.warn("Failed to read gRPC credentials from config file:", error);
+  }
+
+  // Priority 3: No credentials (address must be explicitly configured)
+  return { address: envAddress };
+}
+
+/**
+ * Saves credentials to the config file, creating the directory if needed.
+ * Uses read-modify-write to preserve existing fields.
+ */
+export function saveCredentials(
+  config: { apiKey?: string; anytypeVersion?: string; baseUrl?: string; grpcAppToken?: string; grpcAddress?: string },
+): void {
   const dir = path.dirname(CREDENTIALS_PATH);
   fs.mkdirSync(dir, { recursive: true });
 
-  const data: CredentialsFile = {
-    apiKey: config.apiKey,
-    anytypeVersion: config.anytypeVersion,
-  };
-
-  if (config.baseUrl) {
-    data.baseUrl = config.baseUrl;
+  // Read existing config to preserve fields
+  let existing: CredentialsFile = {};
+  try {
+    if (fs.existsSync(CREDENTIALS_PATH)) {
+      existing = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf-8"));
+    }
+  } catch {
+    // Start fresh if file is corrupt
   }
+
+  const data: CredentialsFile = { ...existing };
+
+  if (config.apiKey !== undefined) data.apiKey = config.apiKey;
+  if (config.anytypeVersion !== undefined) data.anytypeVersion = config.anytypeVersion;
+  if (config.baseUrl !== undefined) data.baseUrl = config.baseUrl;
+  if (config.grpcAppToken !== undefined) data.grpcAppToken = config.grpcAppToken;
+  if (config.grpcAddress !== undefined) data.grpcAddress = config.grpcAddress;
 
   fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }

@@ -29,9 +29,10 @@ This is an MCP (Model Context Protocol) server that bridges Anytype's API with A
 
 ### Entry Points
 
-The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports two commands:
+The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports three commands:
 - `run` (default) — starts the MCP server on stdio
 - `get-key` — interactive flow to authenticate and obtain an API key from a running Anytype instance
+- `grpc-auth` — alternative gRPC auth via 12-word mnemonic (not needed if `get-key` was already run — the REST API key is reused for gRPC)
 
 ### Core Components
 
@@ -59,6 +60,20 @@ The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports two commands:
 - Initializes the MCP proxy with the spec
 - Connects to stdio transport for communication
 
+**gRPC Client (`src/client/grpc-client.ts`)**
+- Pure JS gRPC client for Anytype's `ClientCommands` service (port 31007)
+- Handles session management (create/resume via `WalletCreateSession` RPC)
+- Exposes `fileUpload()` and `fileDownload()` methods
+- Lazy connection — doesn't connect until first use
+- Auto-retries on UNAUTHENTICATED by re-calling `resumeSession()`
+- Uses vendored proto files from `proto/` directory
+
+**File Tools (`src/mcp/file-tools.ts`)**
+- Three custom MCP tools backed by gRPC (not OpenAPI-generated, no `API-` prefix):
+  - `file-upload` — upload a file by local path or URL
+  - `file-download` — download a file to the local filesystem
+  - `file-read` — download and return file content (text, image, or base64)
+
 **Library Exports (`src/index.ts`)**
 - Exports `HttpClient`, `OpenAPIToMCPConverter`, and OpenAPI types for use as a library
 
@@ -72,7 +87,9 @@ The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports two commands:
 
 4. **Base URL Resolution** (`src/utils/base-url.ts`): Priority order is (1) `ANYTYPE_API_BASE_URL` env var, (2) OpenAPI spec `servers[0].url`, (3) default `http://127.0.0.1:31009`.
 
-5. **Build**: esbuild bundles `scripts/start-server.ts` into a single self-contained `bin/cli.mjs` with a shebang for direct execution.
+5. **Build**: esbuild bundles `scripts/start-server.ts` into a single self-contained `bin/cli.mjs` with a shebang for direct execution. gRPC dependencies (`@grpc/grpc-js`, `@grpc/proto-loader`, `protobufjs`) are externalized. Proto files are copied to `bin/proto/` during build.
+
+6. **gRPC File Tools**: Three tools (`file-upload`, `file-download`, `file-read`) use gRPC instead of REST to communicate with the Anytype desktop app's `ClientCommands` service. These require separate authentication via `grpc-auth` command.
 
 ### Known Limitations
 
@@ -80,8 +97,13 @@ The CLI (`scripts/start-server.ts` → `bin/cli.mjs`) supports two commands:
 
 ## Environment Variables
 
+### REST API
 - `OPENAPI_MCP_HEADERS` — JSON object of headers injected into every API request (e.g., `{"Authorization":"Bearer <KEY>", "Anytype-Version":"2025-11-08"}`)
 - `ANYTYPE_API_BASE_URL` — Override the default API base URL (default: `http://127.0.0.1:31009`)
+
+### gRPC (File Tools)
+- `ANYTYPE_GRPC_TOKEN` — gRPC app token for session resumption (alternative to config file)
+- `ANYTYPE_GRPC_ADDRESS` — Override gRPC address (default: `127.0.0.1:31010`)
 
 ## Testing Strategy
 
@@ -90,6 +112,9 @@ Tests use Vitest and are colocated with source files in `__tests__` directories.
 - HTTP client behavior including file uploads
 - MCP proxy tool execution
 - Multipart form data handling
+- gRPC client connection, session, and file operations
+- File type detection and MIME mapping
+- Credential loading (REST and gRPC priority chains)
 
 ## Git Branch Strategy
 

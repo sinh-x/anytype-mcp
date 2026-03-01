@@ -13,6 +13,7 @@ vi.mock("../../client/http-client");
 vi.mock("@modelcontextprotocol/sdk/server/index.js");
 vi.mock("../../config/credentials", () => ({
   loadCredentials: vi.fn(() => ({ headers: {}, baseUrl: undefined })),
+  loadGrpcCredentials: vi.fn(() => ({ address: "127.0.0.1:31010" })),
 }));
 
 const mockLoadCredentials = vi.mocked(loadCredentials);

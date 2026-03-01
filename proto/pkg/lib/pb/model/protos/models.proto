@@ -1,0 +1,72 @@
+// Vendored from anyproto/anytype-heart
+// Only includes types needed for gRPC file operations
+syntax = "proto3";
+package anytype.model;
+option go_package = "pkg/lib/pb/model/protos";
+
+message Block {
+    message Content {
+        message File {
+            enum Type {
+                None = 0;
+                File = 1;
+                Image = 2;
+                Video = 3;
+                Audio = 4;
+                PDF = 5;
+            }
+
+            enum Style {
+                Auto = 0;
+                Link = 1;
+                Embed = 2;
+            }
+
+            enum State {
+                Empty = 0;
+                Uploading = 1;
+                Done = 2;
+                Error = 3;
+            }
+        }
+    }
+}
+
+enum ObjectOrigin {
+    none = 0;
+    clipboard = 1;
+    dragAndDrop = 2;
+    import = 3;
+    webclipper = 4;
+    sharingExtension = 5;
+    usecase = 6;
+    builtin = 7;
+    bookmark = 8;
+    api = 9;
+}
+
+enum ImageKind {
+    Basic = 0;
+    Cover = 1;
+    Icon = 2;
+    AutomaticallyAdded = 3;
+}
+
+message Account {
+    message Auth {
+        message AppInfo {
+            string appHash = 1;
+            string appName = 2;
+            string appKey = 4;
+            int64 createdAt = 5;
+            int64 expireAt = 6;
+            LocalApiScope scope = 7;
+            bool isActive = 8;
+        }
+        enum LocalApiScope {
+            Limited = 0;
+            JsonAPI = 1;
+            Full = 2;
+        }
+    }
+}

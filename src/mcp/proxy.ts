@@ -1,6 +1,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from "@modelcontextprotocol/sdk/types.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { JSONSchema7 as IJsonSchema } from "json-schema";
 import { OpenAPIV3 } from "openapi-types";
 import {
@@ -14,10 +17,20 @@ import {
   GET_CACHED_CONTENT_TOOL_NAME,
   ObjectCacheManager,
 } from "./cache";
+import {
+  FILE_DOWNLOAD_TOOL,
+  FILE_DOWNLOAD_TOOL_NAME,
+  FILE_READ_TOOL,
+  FILE_READ_TOOL_NAME,
+  FILE_UPLOAD_TOOL,
+  FILE_UPLOAD_TOOL_NAME,
+} from "./file-tools";
+import { GrpcClient, GrpcClientError } from "../client/grpc-client";
 import { HttpClient, HttpClientError } from "../client/http-client";
-import { loadCredentials } from "../config/credentials";
+import { GrpcCredentials, loadCredentials, loadGrpcCredentials } from "../config/credentials";
 import { OpenAPIToMCPConverter } from "../openapi/parser";
 import { determineBaseUrl } from "../utils/base-url";
+import { getMimeType, isImageFile, isTextFile } from "../utils/file-type-detector";
 import { sanitize } from "../utils/sanitizer";
 
 type NewToolDefinition = {
@@ -35,6 +48,8 @@ export class MCPProxy {
   private tools: Record<string, NewToolDefinition>;
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>;
   private objectCache: ObjectCacheManager;
+  private grpcClient: GrpcClient | null = null;
+  private grpcCredentials: GrpcCredentials;
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document, instructions?: string) {
     this.server = new Server(
@@ -57,6 +72,9 @@ export class MCPProxy {
     this.tools = tools;
     this.openApiLookup = openApiLookup;
     this.objectCache = new ObjectCacheManager();
+
+    // Initialize gRPC credentials (lazy — won't connect until first use)
+    this.grpcCredentials = loadGrpcCredentials();
 
     this.setupHandlers();
   }
@@ -85,6 +103,11 @@ export class MCPProxy {
       tools.push(CACHE_STATS_TOOL);
       tools.push(GET_CACHED_CONTENT_TOOL);
 
+      // Add gRPC file tools
+      tools.push(FILE_UPLOAD_TOOL);
+      tools.push(FILE_DOWNLOAD_TOOL);
+      tools.push(FILE_READ_TOOL);
+
       return { tools };
     });
 
@@ -105,6 +128,17 @@ export class MCPProxy {
       }
       if (name === GET_CACHED_CONTENT_TOOL_NAME) {
         return this.handleGetCachedContent(params);
+      }
+
+      // Handle gRPC file tools
+      if (name === FILE_UPLOAD_TOOL_NAME) {
+        return this.handleFileUpload(params);
+      }
+      if (name === FILE_DOWNLOAD_TOOL_NAME) {
+        return this.handleFileDownload(params);
+      }
+      if (name === FILE_READ_TOOL_NAME) {
+        return this.handleFileRead(params);
       }
 
       // Find the operation in OpenAPI spec
@@ -396,6 +430,185 @@ export class MCPProxy {
     return {
       content: [{ type: "text", text: JSON.stringify(cached.data) }],
     };
+  }
+
+  private async ensureGrpcClient(): Promise<GrpcClient> {
+    if (!this.grpcCredentials.address) {
+      throw new GrpcClientError(
+        "gRPC address not configured. anytypeHelper uses dynamic ports — configure grpcAddress in credentials.json or run 'anytype-mcp grpc-auth'. Hint: find the port with `ss -tlnp | grep anytypeHelper`.",
+        "NO_GRPC_ADDRESS",
+      );
+    }
+
+    if (!this.grpcCredentials.appToken) {
+      throw new GrpcClientError(
+        "gRPC authentication required. Run 'anytype-mcp get-key' (recommended) or 'anytype-mcp grpc-auth' to set up access.",
+        "NO_APP_TOKEN",
+      );
+    }
+
+    if (!this.grpcClient) {
+      this.grpcClient = new GrpcClient({
+        address: this.grpcCredentials.address,
+        appToken: this.grpcCredentials.appToken,
+      });
+    }
+
+    await this.grpcClient.ensureConnected();
+    return this.grpcClient;
+  }
+
+  private async handleFileUpload(
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const spaceId = params?.space_id as string | undefined;
+    const localPath = params?.local_path as string | undefined;
+    const url = params?.url as string | undefined;
+
+    if (!spaceId) throw new Error("space_id is required");
+    if (!localPath && !url) throw new Error("Either local_path or url is required");
+    if (localPath && url) throw new Error("Provide either local_path or url, not both");
+
+    try {
+      const client = await this.ensureGrpcClient();
+      const result = await client.fileUpload({
+        spaceId,
+        localPath,
+        url,
+        type: params?.type as string | undefined,
+        style: params?.style as string | undefined,
+        imageKind: params?.image_kind as string | undefined,
+      });
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      if (error instanceof GrpcClientError) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ status: "error", code: error.code, message: error.message }) },
+          ],
+        };
+      }
+      throw error;
+    }
+  }
+
+  private async handleFileDownload(
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const objectId = params?.object_id as string | undefined;
+    if (!objectId) throw new Error("object_id is required");
+
+    try {
+      const client = await this.ensureGrpcClient();
+      const result = await client.fileDownload({
+        objectId,
+        path: params?.path as string | undefined,
+      });
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      if (error instanceof GrpcClientError) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ status: "error", code: error.code, message: error.message }) },
+          ],
+        };
+      }
+      throw error;
+    }
+  }
+
+  private async handleFileRead(
+    params: Record<string, unknown> | undefined,
+  ): Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> }> {
+    const objectId = params?.object_id as string | undefined;
+    if (!objectId) throw new Error("object_id is required");
+
+    const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+
+    try {
+      const client = await this.ensureGrpcClient();
+
+      // Download to temp directory
+      const tmpDir = path.join(os.tmpdir(), "anytype-mcp-file-read");
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      const result = await client.fileDownload({ objectId, path: tmpDir });
+      const filePath = result.localPath;
+
+      try {
+        // Check file size
+        const stats = fs.statSync(filePath);
+        if (stats.size > MAX_SIZE) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  status: "error",
+                  message: `File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`,
+                  localPath: filePath,
+                }),
+              },
+            ],
+          };
+        }
+
+        // Text files: return content directly
+        if (isTextFile(filePath)) {
+          const content = fs.readFileSync(filePath, "utf-8");
+          return {
+            content: [{ type: "text", text: content }],
+          };
+        }
+
+        // Images: return as MCP image content
+        if (isImageFile(filePath)) {
+          const data = fs.readFileSync(filePath).toString("base64");
+          const mimeType = getMimeType(filePath);
+          return {
+            content: [{ type: "image", data, mimeType }],
+          };
+        }
+
+        // Other binary: return as base64 text
+        const data = fs.readFileSync(filePath).toString("base64");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                encoding: "base64",
+                mimeType: getMimeType(filePath),
+                data,
+                localPath: filePath,
+              }),
+            },
+          ],
+        };
+      } finally {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    } catch (error) {
+      if (error instanceof GrpcClientError) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ status: "error", code: error.code, message: error.message }) },
+          ],
+        };
+      }
+      throw error;
+    }
   }
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {

@@ -1,0 +1,197 @@
+// Vendored from anyproto/anytype-heart
+// Only includes RPCs needed for gRPC file operations and session management
+syntax = "proto3";
+package anytype;
+option go_package = "pb/protos";
+
+import "google/protobuf/struct.proto";
+import "pkg/lib/pb/model/protos/models.proto";
+
+message Rpc {
+    message Wallet {
+        message CreateSession {
+            message Request {
+                oneof auth {
+                    string mnemonic = 1;
+                    string appKey = 2;
+                    string token = 3;
+                    string accountKey = 4;
+                }
+            }
+
+            message Response {
+                Error error = 1;
+                string token = 2;
+                string appToken = 3;
+                string accountId = 4;
+
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                        APP_TOKEN_NOT_FOUND_IN_THE_CURRENT_ACCOUNT = 101;
+                    }
+                }
+            }
+        }
+
+        message CloseSession {
+            message Request {
+                string token = 1;
+            }
+
+            message Response {
+                Error error = 1;
+
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+    }
+
+    message Account {
+        message LocalLink {
+            message NewChallenge {
+                message Request {
+                    string appName = 1;
+                    anytype.model.Account.Auth.LocalApiScope scope = 2;
+                }
+
+                message Response {
+                    Error error = 1;
+                    string challengeId = 2;
+
+                    message Error {
+                        Code code = 1;
+                        string description = 2;
+
+                        enum Code {
+                            NULL = 0;
+                            UNKNOWN_ERROR = 1;
+                            BAD_INPUT = 2;
+                            ACCOUNT_IS_NOT_RUNNING = 101;
+                            TOO_MANY_REQUESTS = 102;
+                        }
+                    }
+                }
+            }
+
+            message SolveChallenge {
+                message Request {
+                    string challengeId = 1;
+                    string answer = 2;
+                }
+
+                message Response {
+                    Error error = 1;
+                    string sessionToken = 2;
+                    string appKey = 3;
+
+                    message Error {
+                        Code code = 1;
+                        string description = 2;
+
+                        enum Code {
+                            NULL = 0;
+                            UNKNOWN_ERROR = 1;
+                            BAD_INPUT = 2;
+                            ACCOUNT_IS_NOT_RUNNING = 101;
+                            INVALID_CHALLENGE_ID = 102;
+                            CHALLENGE_ATTEMPTS_EXCEEDED = 103;
+                            INCORRECT_ANSWER = 104;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    message File {
+        message Upload {
+            message Request {
+                string spaceId = 6;
+                string url = 1;
+                string localPath = 2;
+                anytype.model.Block.Content.File.Type type = 3;
+                bool disableEncryption = 4;
+                anytype.model.Block.Content.File.Style style = 5;
+                google.protobuf.Struct details = 7;
+                anytype.model.ObjectOrigin origin = 8;
+                anytype.model.ImageKind imageKind = 9;
+                bool preloadOnly = 10;
+                string preloadFileId = 11;
+                string createdInContext = 12;
+                string createdInContextRef = 13;
+            }
+
+            message Response {
+                Error error = 1;
+                string objectId = 2;
+                google.protobuf.Struct details = 3;
+                string preloadFileId = 4;
+
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+
+        message Download {
+            message Request {
+                string objectId = 1;
+                string path = 2;
+            }
+
+            message Response {
+                Error error = 1;
+                string localPath = 2;
+
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+    }
+}
+
+message StreamRequest {
+    string token = 1;
+}
+
+message Event {
+    message Message {
+        // Placeholder — we never parse events, but proto needs the type to exist
+    }
+}
+
+message ResponseEvent {
+    repeated Event.Message messages = 1;
+    string contextId = 2;
+    string traceId = 4;
+}
