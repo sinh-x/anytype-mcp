@@ -142,6 +142,10 @@ export const BATCH_GET_OBJECTS_TOOL: Tool = {
         description: "Array of object IDs to fetch",
         maxItems: 50,
       },
+      force_refresh: {
+        type: "boolean",
+        description: "Bypass the cache and fetch fresh data from the API for all requested objects. Defaults to false.",
+      },
     },
     required: ["space_id", "object_ids"],
   },

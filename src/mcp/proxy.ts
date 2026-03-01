@@ -89,10 +89,23 @@ export class MCPProxy {
         def.methods.forEach((method) => {
           const toolNameWithMethod = `${toolName}-${method.name}`;
           const truncatedToolName = this.truncateToolName(toolNameWithMethod);
+          const inputSchema = { ...method.inputSchema } as Tool["inputSchema"];
+
+          // Inject force_refresh into API-get-object schema
+          if (truncatedToolName === "API-get-object") {
+            inputSchema.properties = {
+              ...inputSchema.properties,
+              force_refresh: {
+                type: "boolean",
+                description: "Bypass the cache and fetch fresh data from the API. Defaults to false.",
+              },
+            };
+          }
+
           tools.push({
             name: truncatedToolName,
             description: method.description,
-            inputSchema: method.inputSchema as Tool["inputSchema"],
+            inputSchema,
           });
         });
       });
@@ -226,6 +239,13 @@ export class MCPProxy {
   ): Promise<{ content: Array<{ type: string; text: string }> }> {
     const spaceId = params?.space_id as string;
     const objectId = params?.object_id as string;
+    const forceRefresh = params?.force_refresh as boolean | undefined;
+
+    // Force refresh: invalidate cache entry before lookup
+    if (forceRefresh && spaceId && objectId) {
+      this.objectCache.invalidate(spaceId, objectId);
+      console.error(`Force refresh: invalidated cache for ${spaceId}:${objectId}`);
+    }
 
     // Check cache first
     if (spaceId && objectId) {
@@ -238,8 +258,9 @@ export class MCPProxy {
       }
     }
 
-    // Cache miss — fetch from API
-    const response = await this.httpClient.executeOperation(operation, params);
+    // Cache miss — fetch from API (strip force_refresh before sending)
+    const { force_refresh: _, ...apiParams } = params ?? {};
+    const response = await this.httpClient.executeOperation(operation, apiParams);
 
     // Cache the result
     if (spaceId && objectId && response.data) {
@@ -257,6 +278,7 @@ export class MCPProxy {
   ): Promise<{ content: Array<{ type: string; text: string }> }> {
     const spaceId = params?.space_id as string | undefined;
     const objectIds = params?.object_ids as string[] | undefined;
+    const forceRefresh = params?.force_refresh as boolean | undefined;
 
     if (!spaceId) {
       throw new Error("space_id is required");
@@ -266,6 +288,14 @@ export class MCPProxy {
     }
     if (objectIds.length > 50) {
       throw new Error("object_ids cannot exceed 50 items");
+    }
+
+    // Force refresh: invalidate all requested objects before lookup
+    if (forceRefresh) {
+      for (const objectId of objectIds) {
+        this.objectCache.invalidate(spaceId, objectId);
+      }
+      console.error(`Force refresh: invalidated ${objectIds.length} cache entries for batch get`);
     }
 
     const operation = this.findOperation("API-get-object");

@@ -316,6 +316,57 @@ describe("MCPProxy", () => {
       expect(data.object.name).toBe("Updated Object");
     });
 
+    it("should bypass cache when force_refresh is true on get-object", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+      const args = { space_id: "space-1", object_id: "obj-1" };
+
+      // First call — fetches from API and caches
+      await callToolHandler({ params: { name: "API-get-object", arguments: args } });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+
+      // Second call with force_refresh — should fetch from API again
+      const freshResponse = {
+        data: {
+          object: {
+            id: "obj-1",
+            name: "Fresh Object",
+            type: { key: "page", name: "Page" },
+            properties: [{ key: "last_modified_date", date: "2025-06-02T12:00:00Z" }],
+            markdown: "# Fresh Content",
+          },
+        },
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+      };
+      mockExecute.mockClear();
+      mockExecute.mockResolvedValue(freshResponse);
+
+      const result = await callToolHandler({
+        params: { name: "API-get-object", arguments: { ...args, force_refresh: true } },
+      });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      const data = JSON.parse(result.content[0].text);
+      expect(data.object.name).toBe("Fresh Object");
+    });
+
+    it("should not send force_refresh to the API", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValue(mockObjectResponse);
+
+      const [, callToolHandler] = getHandlers(proxy);
+
+      await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1", force_refresh: true } },
+      });
+
+      const callParams = mockExecute.mock.calls[0][1];
+      expect(callParams).not.toHaveProperty("force_refresh");
+      expect(callParams).toEqual({ space_id: "space-1", object_id: "obj-1" });
+    });
+
     it("should invalidate cache on delete-object", async () => {
       const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
       mockExecute.mockResolvedValue(mockObjectResponse);
@@ -484,6 +535,34 @@ describe("MCPProxy", () => {
       expect(mockExecute).toHaveBeenCalledTimes(1);
       const summaries = JSON.parse(result.content[0].text);
       expect(summaries).toHaveLength(2);
+    });
+
+    it("should bypass cache when force_refresh is true on batch-get-objects", async () => {
+      const mockExecute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>;
+      mockExecute.mockResolvedValueOnce(makeObjResponse("obj-1", "First"));
+
+      const [, callToolHandler] = getHandlers(proxy);
+
+      // Pre-cache obj-1 via get-object
+      await callToolHandler({
+        params: { name: "API-get-object", arguments: { space_id: "space-1", object_id: "obj-1" } },
+      });
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+
+      // Batch fetch with force_refresh — obj-1 should be re-fetched from API
+      mockExecute.mockClear();
+      mockExecute.mockResolvedValueOnce(makeObjResponse("obj-1", "Refreshed First"));
+
+      const result = await callToolHandler({
+        params: {
+          name: "API-batch-get-objects",
+          arguments: { space_id: "space-1", object_ids: ["obj-1"], force_refresh: true },
+        },
+      });
+
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      const summaries = JSON.parse(result.content[0].text);
+      expect(summaries[0].name).toBe("Refreshed First");
     });
 
     it("should handle errors for individual objects gracefully", async () => {
